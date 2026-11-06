@@ -1,0 +1,60 @@
+services:
+  duckdb-remote-pocketid-mcp:
+    build: .
+    container_name: duckdb-remote-pocketid-mcp
+    restart: unless-stopped
+
+    # The reverse proxy reaches this address and port. Keep 127.0.0.1 when
+    # the proxy runs on this host.
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${HOST_PORT:-8766}:${PORT:-8000}"
+
+    environment:
+      MCP_BASE_URL: ${MCP_BASE_URL}                  # public URL, no trailing slash
+      POCKETID_ISSUER_URL: ${POCKETID_ISSUER_URL}    # e.g. https://id.example.com
+      POCKETID_CLIENT_ID: ${POCKETID_CLIENT_ID}
+      POCKETID_CLIENT_SECRET_FILE: /run/secrets/pocketid_client_secret
+      JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
+      STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/storage_encryption_key
+      HOST: 0.0.0.0
+      PORT: ${PORT:-8000}
+      DATA_DIR: ${DATA_DIR:-/data}
+      MAX_ROWS: ${MAX_ROWS:-1000}
+      MAX_CHARS: ${MAX_CHARS:-50000}
+      QUERY_TIMEOUT: ${QUERY_TIMEOUT:-30}
+      DUCKDB_MEMORY_LIMIT: ${DUCKDB_MEMORY_LIMIT:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    volumes:
+      # The data folder, read-only. This is the kernel-level write block.
+      - ${DATA_PATH:?set DATA_PATH in .env}:${DATA_DIR:-/data}:ro
+      # OAuth client store (encrypted). Back it up or clients must reconnect.
+      - oauth-state:/state
+
+    secrets:
+      - pocketid_client_secret
+      - jwt_signing_key
+      - storage_encryption_key
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${MEM_LIMIT:-2g}
+
+    labels:
+      # Built locally, so Watchtower has no registry image to pull.
+      com.centurylinklabs.watchtower.enable: "false"
+
+volumes:
+  oauth-state:
+
+secrets:
+  pocketid_client_secret:
+    file: ./secrets/pocketid_client_secret
+  jwt_signing_key:
+    file: ./secrets/jwt_signing_key
+  storage_encryption_key:
+    file: ./secrets/storage_encryption_key

@@ -1,0 +1,7 @@
+# The upstream MCP server. To update it, change this one line and rebuild.
+# It pins its own DuckDB version; scripts/prepare_duckdb.py checks that the
+# sandbox settings still exist in that version and fails the build if not.
+mcp-server-motherduck==1.1.0
+
+# Gateway. Not pinned exactly, so an upstream bump can pull a newer FastMCP.
+fastmcp>=4.1.6,<5
