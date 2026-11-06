@@ -219,9 +219,10 @@ Set in `.env`. Compose passes them to the container.
 | `README_MAX_CHARS` | `20000` | Longest data `README.md` sent to the client. |
 | `UPSTREAM_LOG_LEVEL` | `CRITICAL` | Upstream's FastMCP log level. `INFO` to debug. |
 | `LOG_LEVEL` | `INFO` | Gateway log level. |
+| `ALLOWED_CLIENT_REDIRECT_URIS` | Claude + loopback | Redirect URIs OAuth clients may register, comma-separated. See [OAuth security](#oauth-security). |
 
 Also read by the gateway, not needed with Compose: `HOST`, `MCP_PATH` (`/mcp`),
-`POCKETID_SCOPES`, `ALLOWED_CLIENT_REDIRECT_URIS`, `OAUTH_STORAGE_DIR`, and
+`POCKETID_SCOPES`, `OAUTH_STORAGE_DIR`, and
 `MCP_AUTH=none` for local tests without OAuth (never expose that).
 
 ## Operation
@@ -235,6 +236,40 @@ Also read by the gateway, not needed with Compose: `HOST`, `MCP_PATH` (`/mcp`),
 
 The `oauth-state` volume holds the gateway's encrypted OAuth client store.
 Without it, clients must connect again.
+
+### OAuth security
+
+- **Redirect URI allowlist.** OAuth clients may register only the redirect URIs
+  in `ALLOWED_CLIENT_REDIRECT_URIS`. The default is Claude's two callbacks
+  (`https://claude.ai/api/mcp/auth_callback`,
+  `https://claude.com/api/mcp/auth_callback`) and loopback on any port
+  (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) for Claude Code.
+  An authorization code can only go to one of these.
+- **Consent is bound to the browser.** FastMCP 4.1.6 ties the consent form to a
+  cookie in the browser that opened it, and the PocketID callback to a cookie set
+  on approval. A sign-in link forwarded to someone else fails with HTTP 403.
+  FastMCP before 3.2.0 lacked the first check (GHSA-rww4-4w9c-7733), so
+  `requirements.txt` requires 4.1.6 or later.
+- **PocketID v2.** The gateway does not forward the RFC 8707 `resource`
+  parameter to PocketID, which rejects it unless it names a registered API. The
+  PocketID callback URL must be the exact `https://<host>/auth/callback`, with no
+  wildcard.
+
+### Revoke every client and token
+
+Do this after a security fix, after a PocketID upgrade that rotates its signing
+keys, or if a token may have leaked. A new JWT key invalidates every access and
+refresh token the gateway has issued. Clearing the OAuth store removes every
+registered client and stored PocketID token.
+
+```sh
+docker compose stop
+openssl rand -base64 48 | sudo tee secrets/jwt_signing_key > /dev/null
+docker compose run --rm --no-deps --entrypoint sh duckdb-remote-pocketid-mcp -c 'rm -rf /state/oauth/*'
+docker compose up -d
+```
+
+Then remove and re-add the connector in Claude.
 
 When you update upstream, the build fails if the new DuckDB lacks a sandbox
 setting. Run the tests too (below): they check every behaviour above against the
