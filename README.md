@@ -193,6 +193,10 @@ so the PocketID secret, JWT key and storage key never reach DuckDB.
   and fails on missing files.
 - **Nothing persists between calls.** Each query gets a fresh connection, so the
   client puts everything one answer needs into a single query.
+- **One query at a time.** DuckDB's Python client gives a second connection to an
+  open file the same, already-locked instance, so a second query's init SQL would
+  fail. The gateway queues queries instead; each waits at most `QUERY_TIMEOUT`
+  for the one ahead of it.
 - **No spill to disk.** DuckDB adds its spill folder to `allowed_directories`, so
   spilling is off (`temp_directory = ''`). A query larger than memory fails with
   an out-of-memory error instead of writing temp files. Set `DUCKDB_MEMORY_LIMIT`

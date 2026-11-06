@@ -121,3 +121,28 @@ def test_duckdb_alone_allows_copy_into_data_folder(con, sandbox):
         assert target.exists()
     finally:
         target.unlink(missing_ok=True)
+
+
+def test_duckdb_shares_a_locked_instance_between_open_connections(duckdb_assets, sandbox):
+    """Why the gateway runs one query at a time.
+
+    A second connection to a file that is already open gets the same,
+    already-locked instance, so upstream's per-query init SQL fails on it.
+    Once every connection is closed, the next one gets a fresh instance.
+    """
+    db, ext = duckdb_assets["DUCKDB_DB_PATH"], duckdb_assets["DUCKDB_EXTENSION_DIR"]
+    init = server.build_init_sql(sandbox["data"], ext)
+    first = duckdb.connect(db, read_only=True)
+    first.execute(init)
+    second = duckdb.connect(db, read_only=True)
+    try:
+        with pytest.raises(duckdb.Error, match="configuration has been locked"):
+            second.execute(init)
+    finally:
+        second.close()
+        first.close()
+    fresh = duckdb.connect(db, read_only=True)
+    try:
+        fresh.execute(init)  # works again
+    finally:
+        fresh.close()

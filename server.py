@@ -19,6 +19,7 @@ Everything is set by environment variables. See .env.example and README.md.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -152,10 +153,21 @@ def check_sql(sql: str) -> None:
 
 
 class ReadOnlyGuard(Middleware):
-    """Expose only the query and README tools, and check SQL before upstream sees it."""
+    """Expose only the query and README tools, check SQL before upstream sees
+    it, and send upstream one query at a time.
+
+    Why one at a time: upstream opens a fresh read-only connection per query
+    and runs the init SQL on it. DuckDB's Python client hands a connection to
+    a file that is already open the *same* database instance, and that
+    instance is already locked, so the second query's init SQL fails ("the
+    configuration has been locked"). Only when every connection has closed
+    does the next connection get a fresh instance. Serialising queries keeps
+    that true. Queued queries wait at most QUERY_TIMEOUT each.
+    """
 
     def __init__(self, visible: set[str]):
         self.visible = visible
+        self._query_lock = asyncio.Lock()
 
     async def on_list_tools(self, context, call_next):
         tools = await call_next(context)
@@ -165,12 +177,14 @@ class ReadOnlyGuard(Middleware):
         name = context.message.name
         if name not in self.visible:
             raise ToolError(f"Unknown tool: {name}")
-        if name == QUERY_TOOL:
-            sql = (context.message.arguments or {}).get("sql")
-            if not isinstance(sql, str):
-                raise ToolError("execute_query needs a 'sql' string.")
-            check_sql(sql)
-        return await call_next(context)
+        if name != QUERY_TOOL:
+            return await call_next(context)
+        sql = (context.message.arguments or {}).get("sql")
+        if not isinstance(sql, str):
+            raise ToolError("execute_query needs a 'sql' string.")
+        check_sql(sql)
+        async with self._query_lock:
+            return await call_next(context)
 
 
 # --------------------------------------------------------------------------- README / instructions

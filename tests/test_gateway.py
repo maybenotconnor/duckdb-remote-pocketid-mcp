@@ -3,6 +3,7 @@ upstream mcp-server-motherduck as a child process."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -194,6 +195,45 @@ async def test_unparseable_sql_is_rejected(client):
 
 async def test_empty_sql_is_rejected(client):
     assert "No SQL statement" in await rejected(client, " ; ")
+
+
+# ---------------------------------------------------------------- concurrent queries
+
+async def test_concurrent_queries_all_succeed(client, sandbox):
+    """Regression: overlapping queries shared one locked DuckDB instance, so
+    every query after the first failed its init SQL."""
+    d = sandbox["data"]
+    sqls = [
+        f"SELECT count(*) FROM read_csv('{d}/sales/*.csv*'), range(200000)",
+        f"SELECT count(*) FROM read_json_auto('{d}/events/*.jsonl*'), range(200000)",
+        f"SELECT count(*) FROM read_parquet('{d}/**/*.parquet'), range(200000)",
+        f"SELECT count(*) FROM sqlite_scan('{d}/app.sqlite', 'users'), range(200000)",
+    ] * 3
+    results = await asyncio.gather(
+        *[client.call_tool("execute_query", {"sql": sql}, raise_on_error=False) for sql in sqls]
+    )
+    errors = [r.content[0].text[:200] for r in results if r.is_error]
+    assert errors == []
+    assert [result_json(r)["rows"][0][0] for r in results] == [1_000_000, 1_000_000, 1_200_000, 600_000] * 3
+
+
+async def test_concurrent_queries_keep_the_sandbox(client, sandbox):
+    """Every concurrent query still runs on a locked, confined instance."""
+    calls = [client.call_tool("execute_query", {"sql": "SELECT * FROM read_text('/etc/passwd')"}, raise_on_error=False)
+             for _ in range(4)]
+    calls += [client.call_tool("execute_query", {"sql": "SELECT value FROM duckdb_settings() WHERE name = 'lock_configuration'"})
+              for _ in range(4)]
+    results = await asyncio.gather(*calls)
+    assert all(r.is_error and "Permission Error" in r.content[0].text for r in results[:4])
+    assert all(result_json(r)["rows"] == [["true"]] for r in results[4:])
+
+
+async def test_timeout_does_not_block_the_queue(tight_client):
+    slow = tight_client.call_tool("execute_query", {"sql": "SELECT count(*) FROM range(1000000000000) a"}, raise_on_error=False)
+    fast = [tight_client.call_tool("execute_query", {"sql": "SELECT 1"}) for _ in range(3)]
+    results = await asyncio.gather(slow, *fast)
+    assert "timed out" in results[0].content[0].text
+    assert all(result_json(r)["rows"] == [[1]] for r in results[1:])
 
 
 # ---------------------------------------------------------------- results stay small
